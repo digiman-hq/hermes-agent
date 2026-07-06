@@ -92,6 +92,20 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
 TOOLSETS = {
+    # Microsoft 365 (SharePoint files + Outlook mail) via app-only Graph.
+    # A non-configurable toolset recovered into a platform's tool set by
+    # _get_platform_tools (like discord/feishu). Its tools live in
+    # _HERMES_CORE_TOOLS so they're part of every hermes-* platform composite;
+    # this TOOLSETS entry is what lets the recovery loop surface them. Runtime-
+    # gated by check_fn on MSGRAPH_* in tools/msgraph_tools.py.
+    "msgraph": {
+        "description": "Microsoft 365 SharePoint files and Outlook mail via Graph",
+        "tools": [
+            "msgraph_list_sites", "msgraph_search_files",
+            "msgraph_list_mail", "msgraph_get_mail",
+        ],
+        "includes": [],
+    },
     # Basic toolsets - individual tool categories
     "web": {
         "description": "Web research and content extraction tools",
