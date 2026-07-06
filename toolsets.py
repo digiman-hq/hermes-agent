@@ -61,6 +61,11 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Microsoft 365 (SharePoint files + Outlook mail) via app-only Graph.
+    # Gated on MSGRAPH_TENANT_ID/CLIENT_ID/CLIENT_SECRET via check_fn in
+    # tools/msgraph_tools.py — hidden until those env vars are configured.
+    "msgraph_list_sites", "msgraph_search_files",
+    "msgraph_list_mail", "msgraph_get_mail",
     # Kanban multi-agent coordination — only in schema when the agent is
     # spawned as a kanban worker (HERMES_KANBAN_TASK env set) or the current
     # profile explicitly enables the kanban toolset. Gated via check_fn in
