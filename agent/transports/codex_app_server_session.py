@@ -188,6 +188,23 @@ class _ServerRequestRouting:
     auto_approve_apply_patch: bool = False
 
 
+def _trusted_mcp_servers() -> set[str]:
+    """MCP servers whose codex elicitations are auto-accepted on the gateway.
+
+    Always includes the built-in ``hermes-tools`` callback. Operators can
+    trust additional first-party MCP servers (e.g. a self-hosted Microsoft
+    Graph server) for unattended gateway / cron use — where no human can
+    approve the codex elicitation prompt — by listing their server names in
+    ``HERMES_CODEX_TRUSTED_MCP_SERVERS`` (comma-separated). Only enable this
+    for MCP servers you control and trust: their tool calls then run without
+    per-call approval on this instance.
+    """
+    trusted = {"hermes-tools"}
+    extra = os.environ.get("HERMES_CODEX_TRUSTED_MCP_SERVERS", "")
+    trusted.update(name.strip() for name in extra.split(",") if name.strip())
+    return trusted
+
+
 class CodexAppServerSession:
     """One Codex thread per Hermes session, lifetime owned by AIAgent.
 
@@ -672,11 +689,13 @@ class CodexAppServerSession:
             # OAuth, form data). For our own hermes-tools callback we
             # auto-accept — the user already approved Hermes' tools
             # by enabling the runtime, and we never expose anything
-            # codex's built-in shell can't already do. For other MCP
-            # servers we decline so the user explicitly opts in via
-            # codex's own auth flow.
+            # codex's built-in shell can't already do. Operators can
+            # trust additional first-party MCP servers for unattended
+            # gateway use via HERMES_CODEX_TRUSTED_MCP_SERVERS (comma-
+            # separated server names). For everything else we decline so
+            # the user explicitly opts in via codex's own auth flow.
             server_name = params.get("serverName") or ""
-            if server_name == "hermes-tools":
+            if server_name in _trusted_mcp_servers():
                 self._client.respond(
                     rid,
                     {"action": "accept", "content": None, "_meta": None},
