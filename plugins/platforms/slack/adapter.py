@@ -4106,7 +4106,14 @@ def interactive_setup() -> None:
 
     def _write_slack_manifest_and_instruct() -> None:
         """Generate the Slack manifest, write it under HERMES_HOME, and print
-        paste-into-Slack instructions. Failures are non-fatal."""
+        paste-into-Slack instructions. Failures are non-fatal.
+
+        Slash commands are omitted on purpose: slash names share one
+        workspace-wide namespace, so every Hermes app registering /start,
+        /help, /model, ... hijacks them from previously installed apps
+        (last install wins). Mentions and DMs are per-bot and never
+        collide; typed !commands cover the full command set.
+        """
         try:
             from hermes_cli.slack_cli import _build_full_manifest
             from hermes_constants import get_hermes_home
@@ -4115,6 +4122,7 @@ def interactive_setup() -> None:
             manifest = _build_full_manifest(
                 bot_name="Hermes",
                 bot_description="Your Hermes agent on Slack",
+                include_slashes=False,
             )
             target = Path(get_hermes_home()) / "slack-manifest.json"
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -4126,11 +4134,18 @@ def interactive_setup() -> None:
             print_info(
                 "   Paste it into https://api.slack.com/apps → your app → Features "
                 "→ App Manifest → Edit, then Save.  Slack will prompt to "
-                "reinstall if scopes or slash commands changed."
+                "reinstall if scopes changed."
             )
             print_info(
-                "   Re-run `hermes slack manifest --write` anytime to refresh after "
-                "Hermes adds new commands."
+                "   How to talk to the bot: mention it in channels (@YourBot ...) "
+                "or DM it. Commands are typed with the ! prefix (!help, !new, "
+                "!model, ...) — they work in threads too."
+            )
+            print_info(
+                "   No slash commands are registered: slash names are shared "
+                "workspace-wide and collide between apps. To register them "
+                "anyway (single-bot workspace), run "
+                "`hermes slack manifest --write`."
             )
         except Exception as e:
             print_warning(f"Could not write Slack manifest: {e}")

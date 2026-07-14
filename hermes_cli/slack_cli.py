@@ -27,6 +27,7 @@ def _build_full_manifest(
     bot_name: str,
     bot_description: str,
     include_assistant: bool = True,
+    include_slashes: bool = True,
 ) -> dict:
     """Build a full Slack manifest merging display info + our slash list.
 
@@ -44,11 +45,17 @@ def _build_full_manifest(
     ``command`` events. Pass ``include_assistant=False`` (``--no-assistant``)
     to omit those three pieces and get a flat DM surface where ``/help``,
     ``/new``, etc. work inline.
+
+    When ``include_slashes`` is False (``--no-slashes``) the manifest omits
+    the ``slash_commands`` list and the ``commands`` OAuth scope entirely.
+    Slack slash command names share a single workspace-wide namespace — two
+    apps registering ``/start`` fight over it and the last-installed app
+    wins — so multi-agent workspaces (one Hermes app per person) should not
+    register any. Every command stays reachable via the typed ``!command``
+    prefix (the Slack adapter rewrites ``!model`` → ``/model`` on receive)
+    and via ``/hermes <subcommand>`` when slashes are kept.
     """
     from hermes_cli.commands import slack_app_manifest
-
-    partial = slack_app_manifest()
-    slashes = partial["features"]["slash_commands"]
 
     features = {
         "app_home": {
@@ -60,15 +67,16 @@ def _build_full_manifest(
             "display_name": bot_name[:80],
             "always_online": True,
         },
-        "slash_commands": slashes,
     }
+    if include_slashes:
+        partial = slack_app_manifest()
+        features["slash_commands"] = partial["features"]["slash_commands"]
 
     bot_scopes = [
         "app_mentions:read",
         "channels:history",
         "channels:read",
         "chat:write",
-        "commands",
         "files:read",
         "files:write",
         "groups:history",
@@ -78,6 +86,9 @@ def _build_full_manifest(
         "im:write",
         "users:read",
     ]
+    if include_slashes:
+        bot_scopes.append("commands")
+        bot_scopes.sort()
 
     bot_events = [
         "app_mention",
@@ -144,17 +155,28 @@ def slack_manifest_command(args) -> int:
                       assistant:write scope, assistant_thread_* events) so
                       DMs render as a flat chat where bare slash commands
                       work inline instead of the Assistant thread pane.
+      --no-slashes    Omit the slash_commands list and the commands OAuth
+                      scope. Recommended for workspaces running multiple
+                      Hermes apps — slash names are workspace-global and
+                      collide. Commands stay reachable via the typed
+                      ``!command`` prefix.
     """
     name = getattr(args, "name", None) or "Hermes"
     description = getattr(args, "description", None) or "Your Hermes agent on Slack"
     include_assistant = not getattr(args, "no_assistant", False)
+    include_slashes = not getattr(args, "no_slashes", False)
 
     if getattr(args, "slashes_only", False):
         from hermes_cli.commands import slack_app_manifest
 
         manifest = slack_app_manifest()["features"]["slash_commands"]
     else:
-        manifest = _build_full_manifest(name, description, include_assistant=include_assistant)
+        manifest = _build_full_manifest(
+            name,
+            description,
+            include_assistant=include_assistant,
+            include_slashes=include_slashes,
+        )
 
     payload = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
 

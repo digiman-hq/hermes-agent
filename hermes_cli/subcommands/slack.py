@@ -65,4 +65,13 @@ def build_slack_parser(subparsers, *, cmd_slack: Callable) -> None:
         "where bare slash commands (/help, /new) work inline instead of "
         "Slack's Assistant thread pane.",
     )
+    slack_manifest.add_argument(
+        "--no-slashes",
+        action="store_true",
+        help="Omit slash command registration and the commands OAuth scope. "
+        "Slash names are workspace-global (last-installed app wins), so "
+        "workspaces running multiple Hermes apps should not register any. "
+        "Commands stay reachable by typing !command (e.g. !help, !model) "
+        "in a mention, DM, or thread.",
+    )
     slack_parser.set_defaults(func=cmd_slack)
