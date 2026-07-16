@@ -19,6 +19,8 @@ services:
     tty: true
     ports:
       - "127.0.0.1:3978:3978"
+    env_file:
+      - /Users/hayeon/.hermes-torajima/.env
     volumes:
       - /Users/hayeon/.hermes-torajima:/opt/data
       # Keep Codex OAuth state isolated with this deployment and persistent
@@ -27,4 +29,7 @@ services:
     environment:
       HERMES_UID: "${HERMES_UID:-501}"
       HERMES_GID: "${HERMES_GID:-20}"
-    command: ["sleep", "infinity"]
+      HERMES_CODEX_TRUSTED_MCP_SERVERS: "microsoft365"
+      MS365_MCP_TOKEN_CACHE_PATH: "/opt/data/ms365/token-cache.json"
+      MS365_MCP_SELECTED_ACCOUNT_PATH: "/opt/data/ms365/selected-account.json"
+    command: ["gateway", "run"]
