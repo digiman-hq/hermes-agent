@@ -1,0 +1,30 @@
+# Single-instance MacBook validation environment for the Torajima deployment.
+#
+# Bootstrap:
+#   docker compose -f docker-compose.edge.yml build
+#   docker compose -f docker-compose.edge.yml up -d
+#   docker compose -f docker-compose.edge.yml exec hermes-edge hermes setup
+#
+# The bootstrap container intentionally stays idle until setup and the Teams
+# credentials are complete. Replace the command with ["gateway", "run"] once
+# the instance is configured for end-to-end validation.
+services:
+  hermes-edge:
+    build:
+      context: .
+    image: hermes-agent-edge:local
+    container_name: hermes-edge-torajima
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    ports:
+      - "127.0.0.1:3978:3978"
+    volumes:
+      - /Users/hayeon/.hermes-torajima:/opt/data
+      # Keep Codex OAuth state isolated with this deployment and persistent
+      # across container recreation.
+      - /Users/hayeon/.hermes-torajima/.codex:/opt/data/.codex
+    environment:
+      HERMES_UID: "${HERMES_UID:-501}"
+      HERMES_GID: "${HERMES_GID:-20}"
+    command: ["sleep", "infinity"]
