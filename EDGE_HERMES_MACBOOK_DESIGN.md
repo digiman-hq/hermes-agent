@@ -51,9 +51,22 @@
 
 ---
 
-## 4. 상세 설계 — ② 모델 provider (**codex app server**, OAuth)
+## 4. 상세 설계 — ② 모델 provider (codex OAuth — **런타임 = codex_responses 확정**)
 
-> **해석 최종 확정 (Slack 스레드 근거)**: "codex 서버"는 API 키 직결도, 자체 호스팅도 아니다. **hermes 내장 `hermes setup`의 provider 선택에서 "Codex"를 고르면**, hermes에 내장된 **codex app server 연결 모듈**이 OpenAI **Codex 백엔드에 OAuth로 연결**된다. `hermes setup`이 출력하는 **URL로 OpenAI에 로그인·승인**하면 끝. **API 키 발급/충전 불필요** — token cost는 로그인한 계정(구독)에 붙는다.
+> **✅ 런타임 확정: `codex_responses` (Suminaga 동의, 2026-07-16/17)**. provider=`openai-codex`, model=`gpt-5.4-mini`, OAuth(`/opt/data/auth.json`, device_code). 인증은 ChatGPT/Codex 구독 OAuth(app_server와 동일): API 키 전부 미설정, 호출 `base_url=https://chatgpt.com/backend-api/codex`, 내부 판정 `billing_mode=subscription_included`.
+>
+> **과금 정확 (2026-07-17 정책)**: OpenAI **API키 종량과금은 없음**. 단 ChatGPT Codex는 완전 무과금 아님 — **구독 포함량 우선 사용 → 초과 시** 계정에 Codex credits 구매/Auto top-up ON이면 flexible credit 잔액에서 token rate card로 차감+자동결제 가능. **무예산 보장하려면 계정 Codex Settings→Usage Dashboard에서 Auto top-up OFF 확인.** (app_server도 동일.) 근거: help.openai.com codex-in-chatgpt / flexible-usage-credits / codex-rate-card-2.
+>
+> (이하 검토 이력)
+>
+> **dev 스모크 검증 결과**:
+> - ✅ codex_responses에서 **실제 모델 응답 성공** (EDGE_CODEX_OK).
+> - ✅ **내장 memory 정상 동작** (add/remove 성공, `/opt/data/memories/MEMORY.md` 기록 확인) → `_AGENT_LOOP_TOOLS` 하드블록은 **app_server 전용**. **codex_responses면 메모리가 그냥 켜진다** → §5 "메모리 보류"는 responses 선택 시 불필요해짐.
+> - ⚠️ **M365 MCP는 이 fresh 컨테이너에 미등록** (`/opt/data/config.yaml` mcp_servers 비어있음, config.toml 없음, MSGRAPH creds absent). macmini 설정 미이식 상태 → 어느 런타임이든 **M365 MCP를 config.yaml에 새로 등록 + MSGRAPH creds 필요**.
+>
+> → **결론: 런타임 선택은 사실상 "메모리"만의 문제.** codex_responses = 뇌+메모리 다 동작(추천). app_server = 메모리는 MCP 별도 필요. M365·Teams는 어느 쪽이든 동일 작업. **Suminaga가 app_server를 특별히 원하지 않으면 codex_responses 권장.**
+
+> **해석 (Slack 스레드 근거)**: "codex 서버"는 API 키 직결도, 자체 호스팅도 아니다. **hermes 내장 `hermes setup`의 provider 선택에서 "Codex"를 고르면**, hermes에 내장된 **codex app server 연결 모듈**이 OpenAI **Codex 백엔드에 OAuth로 연결**된다. `hermes setup`이 출력하는 **URL로 OpenAI에 로그인·승인**하면 끝. **API 키 발급/충전 불필요** — token cost는 로그인한 계정(구독)에 붙는다.
 
 **설정 방법 (API 키 아님)**:
 ```
@@ -184,3 +197,60 @@ TEAMS_ALLOWED_USERS=55206f0e-76ae-4cfd-98ee-710d017ffb2d
 - ~~CLIENT_SECRET 재발급~~ → 기존 값 재사용, 재발급은 고객 인계 직전에만.
 - ~~Honcho~~ → 제외 확정.
 - ~~Docker 데몬~~ → 기동 완료 ✅.
+- ~~M365 인증(MSGRAPH/로그인)~~ → **완료** ✅. softeria device-code OAuth 성공, 토큰 `/opt/data/ms365` 영속, Graph 실호출 통과. (막판 블로커였던 `530035`는 2026-07-01부터 신규 테넌트 Security Defaults가 device-code 차단 → 보안 기본값 Disabled로 해소. **데모 후 재활성화 필요**.)
+
+---
+
+## 11. 데모 시나리오 설계 (dev 인계용)
+
+> 목표: Teams에서 hermes를 **M365 업무 에이전트**로 시연. 스미나가 씨 요구 4종(메일 초안 / SharePoint 업데이트 / 3분 자동실행 / 멀티스텝 연쇄) 충족. **매 실행이 반드시 무언가를 생성·갱신·통지**하도록 설계해 데모 중 "안 움직임"을 방지.
+
+### 11-0. ⚠️ 선행: 데이터 준비 (현재 테넌트 비어있음)
+dev 검증에서 **SharePoint 사이트 0개**. 데모 전 DigiManAI에 샘플 데이터 필요:
+- SharePoint 사이트 1개 + 문서 라이브러리/리스트에 샘플 항목 몇 개 (예: 営業案件/提案書 리스트, 샘플 문서)
+- `admin@DigiManAI` 메일함에 샘플 메일 몇 통
+- (사용자가 진행 중 — "デモ用ファイルを入れている中")
+
+### 11-1. 실제 M365 툴 이름 (dev 확인, softeria 106개 중)
+| 용도 | 툴 이름 |
+|------|--------|
+| SharePoint 사이트 검색 | `search-sharepoint-sites` |
+| 파일 검색 | `search-onedrive-files` |
+| 메일 목록/검색 | `list-mail-messages` |
+| 메일 본문 | `get-mail-message` |
+| 사용자 조회 | `get-current-user` |
+| 메일 초안 생성 (쓰기) | (create-draft/create-mail류 — dev가 106개 중 확정) |
+| SharePoint/리스트 갱신 (쓰기) | (update-list-item/upload류 — dev가 확정) |
+
+### 11-2. Part A — 대화형 (Teams DM, 발표자가 봇에 입력)
+데모 대사 흐름:
+1. "SharePointのサイト一覧を見せて" → `search-sharepoint-sites`
+2. "〇〇について資料を検索して" → `search-onedrive-files`
+3. "最近の受信メールを3件教えて" → `list-mail-messages`
+4. **★멀티스텝 목玉**: "SharePointの〇〇の情報をもとに、△△さん宛のフォローアップメール下書きを作成して" → 검색 → 본문 취득 → **메일 초안 생성**
+5. "実行内容をSharePointの活動ログに記録して" → **SharePoint 리스트/파일 갱신**
+
+### 11-3. Part B — 자동 스케줄 (cron, 3분마다)
+hermes 내장 스케줄러 job **`m365-demo-pulse`** — 3분 간격(데모용; 본번 30분). **매 실행 고정 5단계** (항상 출력 생성):
+1. SharePoint 대상 리스트/라이브러리 최신 항목 조회
+2. 메일함 신착 확인
+3. 위 정보 요약 → **팔로우업 메일 초안 1건 생성**
+4. SharePoint 활동 로그에 **타임스탬프 실행 기록 추가** (← 매 실행 "변화" 보장)
+5. Teams **home 채널에 요약 통지** (확인/생성/갱신 내용)
+
+### 11-4. dev 구현 노트
+- cron = hermes 내장 스케줄러에 위 프롬프트를 job 등록. 멀티스텝 신뢰성 부족하면 hermes **skill**로 고정.
+- **`TEAMS_HOME_CHANNEL`** 설정 필요 (cron 통지 대상 채널 ID — plugin.yaml optional_env).
+- 메일은 **초안만, 발송 X** (Mail.Send 스코프 미부여 — 의도적).
+- 대상 SharePoint 사이트/리스트·메일함을 프롬프트에 고정하려면 실제 ID/이름 필요.
+
+### 11-5. qa 검증 (M3)
+- cron 3분마다 fire → Teams home 게시 + 메일 초안 생성 + SharePoint 로그 갱신, 3연속 확인.
+- Part A 대화형 실시간 동작(각 툴 호출 성공).
+- 증거: Teams 메시지, 메일함 초안, SharePoint 로그 타임스탬프.
+
+### 11-6. 열린 입력 (사용자/dev 확정 필요)
+1. `TEAMS_HOME_CHANNEL` — 어느 Teams 채널에 통지할지
+2. 대상 **SharePoint 사이트/리스트** 이름·ID
+3. **샘플 데이터** 투입 완료 여부 (SharePoint 항목 + 메일)
+4. 메일 초안 수신인(데모용 더미 주소)
