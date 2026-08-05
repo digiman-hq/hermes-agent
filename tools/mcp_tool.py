@@ -2416,7 +2416,25 @@ class MCPServerTask:
 # Module-level state
 # ---------------------------------------------------------------------------
 
+# Keyed by ``_server_key(name)`` — the server NAME plus the HERMES_HOME that
+# configured it, **not** the bare name.
+#
+# A multi-profile gateway serves every user from one process and switches
+# HERMES_HOME per turn (``_profile_runtime_scope``). Keying by bare name made
+# the first profile to connect win: every later profile reused that process,
+# so a per-profile ``MS365_MCP_TOKEN_CACHE_PATH`` was silently ignored and all
+# users shared one Microsoft 365 identity. Single-profile deployments resolve
+# to one key and behave exactly as before.
 _servers: Dict[str, MCPServerTask] = {}
+
+
+def _server_key(server_name: str) -> str:
+    """Registry key for *server_name* under the currently active HERMES_HOME."""
+    try:
+        from hermes_constants import get_hermes_home
+        return f"{server_name}\x00{get_hermes_home()}"
+    except Exception:
+        return server_name
 _server_connecting: set[str] = set()
 _server_connect_errors: Dict[str, str] = {}
 
@@ -2590,7 +2608,7 @@ def _handle_auth_error_and_retry(
 
     if recovered:
         with _lock:
-            srv = _servers.get(server_name)
+            srv = _servers.get(_server_key(server_name))
         if srv is not None and hasattr(srv, "_reconnect_event"):
             loop = _mcp_loop
             if loop is not None and loop.is_running():
@@ -2738,7 +2756,7 @@ def _handle_session_expired_and_retry(
         return None
 
     with _lock:
-        srv = _servers.get(server_name)
+        srv = _servers.get(_server_key(server_name))
     if srv is None or not hasattr(srv, "_reconnect_event"):
         return None
 
@@ -3150,7 +3168,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # Cooldown elapsed → fall through as a half-open probe.
 
         with _lock:
-            server = _servers.get(server_name)
+            server = _servers.get(_server_key(server_name))
         if not server or not server.session:
             _bump_server_error(server_name)
             return json.dumps({
@@ -3272,7 +3290,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
 
     def _handler(args: dict, **kwargs) -> str:
         with _lock:
-            server = _servers.get(server_name)
+            server = _servers.get(_server_key(server_name))
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
@@ -3332,7 +3350,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
         from tools.registry import tool_error
 
         with _lock:
-            server = _servers.get(server_name)
+            server = _servers.get(_server_key(server_name))
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
@@ -3390,7 +3408,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
 
     def _handler(args: dict, **kwargs) -> str:
         with _lock:
-            server = _servers.get(server_name)
+            server = _servers.get(_server_key(server_name))
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
@@ -3455,7 +3473,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         from tools.registry import tool_error
 
         with _lock:
-            server = _servers.get(server_name)
+            server = _servers.get(_server_key(server_name))
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
@@ -3524,7 +3542,7 @@ def _make_check_fn(server_name: str):
 
     def _check() -> bool:
         with _lock:
-            server = _servers.get(server_name)
+            server = _servers.get(_server_key(server_name))
         return server is not None and server.session is not None
 
     return _check
@@ -4006,7 +4024,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     with _lock:
         _server_connecting.discard(name)
         _server_connect_errors.pop(name, None)
-        _servers[name] = server
+        _servers[_server_key(name)] = server
 
     registered_names = _register_server_tools(name, server, config)
     server._registered_tool_names = list(registered_names)
@@ -4051,7 +4069,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         new_servers = {
             k: v
             for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
+            if _server_key(k) not in _servers and _parse_boolish(v.get("enabled", True), default=True)
         }
         _server_connecting.update(new_servers)
         for srv_name in new_servers:
@@ -4116,9 +4134,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 
     # Log a summary so ACP callers get visibility into what was registered.
     with _lock:
-        connected = [n for n in new_servers if n in _servers]
+        connected = [n for n in new_servers if _server_key(n) in _servers]
         new_tool_count = sum(
-            len(getattr(_servers[n], "_registered_tool_names", []))
+            len(getattr(_servers[_server_key(n)], "_registered_tool_names", []))
             for n in connected
         )
     failed = len(new_servers) - len(connected)
@@ -4156,7 +4174,7 @@ def discover_mcp_tools() -> List[str]:
         new_server_names = [
             name
             for name, cfg in servers.items()
-            if name not in _servers and _parse_boolish(cfg.get("enabled", True), default=True)
+            if _server_key(name) not in _servers and _parse_boolish(cfg.get("enabled", True), default=True)
         ]
 
     tool_names = register_mcp_servers(servers)
@@ -4164,9 +4182,9 @@ def discover_mcp_tools() -> List[str]:
         return tool_names
 
     with _lock:
-        connected_server_names = [name for name in new_server_names if name in _servers]
+        connected_server_names = [name for name in new_server_names if _server_key(name) in _servers]
         new_tool_count = sum(
-            len(getattr(_servers[name], "_registered_tool_names", []))
+            len(getattr(_servers[_server_key(name)], "_registered_tool_names", []))
             for name in connected_server_names
         )
 
@@ -4214,7 +4232,9 @@ def get_mcp_status() -> List[dict]:
         return result
 
     with _lock:
-        active_servers = dict(_servers)
+        # Keys are home-scoped (_server_key); re-index by bare name for the
+        # status view, which is per-process and only reports what is live now.
+        active_servers = {k.split("\x00", 1)[0]: v for k, v in _servers.items()}
         connecting = set(_server_connecting)
         connect_errors = dict(_server_connect_errors)
 
