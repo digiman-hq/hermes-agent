@@ -830,6 +830,21 @@ def run_debug(args):
         run_debug_share(args)
     elif subcmd == "delete":
         run_debug_delete(args)
+    elif subcmd == "codex-apps":
+        from hermes_cli.codex_app_diagnostics import (
+            dump_codex_apps,
+            print_codex_apps_json,
+            print_codex_apps_summary,
+        )
+
+        payload = dump_codex_apps(
+            codex_home=getattr(args, "codex_home", None),
+            timeout=float(getattr(args, "timeout", 15.0) or 15.0),
+        )
+        if getattr(args, "json", False):
+            print_codex_apps_json(payload)
+        else:
+            print_codex_apps_summary(payload)
     else:
         # Default: show help
         print("Usage: hermes debug <command>")
@@ -837,6 +852,7 @@ def run_debug(args):
         print("Commands:")
         print("  share    Upload debug report to a paste service and print URL")
         print("  delete   Delete a previously uploaded paste")
+        print("  codex-apps  Dump Codex plugin/list and app/list diagnostics")
         print()
         print("Options (share):")
         print("  --lines N    Number of log lines to include (default: 200)")

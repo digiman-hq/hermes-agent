@@ -145,6 +145,14 @@ The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets â
    ```
    Hermes' own `hermes auth login codex` writes to `~/.hermes/auth.json` â€” that's a separate session. **Run `codex login` separately** if you haven't.
 
+   In Docker, mount this state separately from Hermes' home so container
+   recreates do not lose the Codex CLI session:
+   ```yaml
+   volumes:
+     - ~/.hermes:/opt/data
+     - ~/.codex:/opt/data/.codex
+   ```
+
 3. **(Optional) Install the Codex plugins you want.** When you enable the runtime, Hermes auto-migrates whichever curated plugins you've already installed via Codex CLI:
    ```bash
    codex plugin marketplace add openai-curated

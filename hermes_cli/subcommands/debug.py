@@ -30,6 +30,7 @@ Examples:
     hermes debug share --local      Print report locally (no upload)
     hermes debug share --no-redact  Disable upload-time secret redaction
     hermes debug delete <url>       Delete a previously uploaded paste
+    hermes debug codex-apps --json  Dump Codex plugin/list + app/list RPCs
 """,
     )
     debug_sub = debug_parser.add_subparsers(dest="debug_command")
@@ -73,5 +74,25 @@ Examples:
         nargs="*",
         default=[],
         help="One or more paste URLs to delete (e.g. https://paste.rs/abc123)",
+    )
+    apps_parser = debug_sub.add_parser(
+        "codex-apps",
+        help="Dump Codex app-server plugin/list and app/list diagnostics",
+    )
+    apps_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full diagnostic payload as JSON",
+    )
+    apps_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=15.0,
+        help="Timeout in seconds for each Codex RPC (default: 15)",
+    )
+    apps_parser.add_argument(
+        "--codex-home",
+        default=None,
+        help="Override CODEX_HOME for the Codex subprocess",
     )
     debug_parser.set_defaults(func=cmd_debug)

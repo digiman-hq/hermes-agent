@@ -105,6 +105,13 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && 
     ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
     ln -sf /usr/local/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
 
+# Codex app-server runtime support. Hermes can hand OpenAI/Codex turns to a
+# local `codex app-server` subprocess when `model.openai_runtime` is set to
+# `codex_app_server`; Docker images need the CLI baked in because runtime lazy
+# installs are disabled below.
+RUN npm install -g @openai/codex@0.144.4 && \
+    codex --version
+
 WORKDIR /opt/hermes
 
 # ---------- Layer-cached dependency install ----------
