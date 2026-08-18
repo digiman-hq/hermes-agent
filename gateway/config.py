@@ -92,11 +92,27 @@ def _coerce_optional_positive_int(value: Any, key: str) -> Optional[int]:
     return parsed
 
 
+#: Sent to unauthorized DMs when the behavior is ``"reject"`` and no message is
+#: configured. Deliberately says nothing about what the bot is or who may use
+#: it — the recipient is, by definition, not entitled to that.
+DEFAULT_UNAUTHORIZED_MESSAGE = "Sorry, I can't help you here."
+
+
 def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
-    """Normalize unauthorized DM behavior to a supported value."""
+    """Normalize unauthorized DM behavior to a supported value.
+
+    ``pair``    reply with a pairing code the owner can approve
+    ``ignore``  drop silently
+    ``reject``  reply once with a fixed refusal, then drop (rate-limited)
+
+    ``reject`` exists for deployments where silence is the wrong answer: an
+    internal bot that is discoverable org-wide leaves a colleague wondering
+    whether it is broken. It says only that it cannot help — no pairing offer,
+    no hint about what the bot does.
+    """
     if isinstance(value, str):
         normalized = value.strip().lower()
-        if normalized in {"pair", "ignore"}:
+        if normalized in {"pair", "ignore", "reject"}:
             return normalized
     return default
 
@@ -368,6 +384,18 @@ class PlatformConfig:
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
 
+        # Fold the unauthorized-DM policy keys in from the top level too.
+        # Readers (``get_unauthorized_dm_behavior`` / ``get_unauthorized_message``)
+        # look in ``extra``, but nobody hand-writing YAML nests a two-key policy
+        # under ``extra:``, and ``hermes config set platforms.<p>.<key>`` writes
+        # it at the top level. Without this the value lands nowhere and the
+        # operator gets a success message plus the old behavior — the same
+        # silent-drop shape as ``multiplex_profiles`` under ``gateway:``.
+        extra = dict(data.get("extra", {}) or {})
+        for _key in ("unauthorized_dm_behavior", "unauthorized_message"):
+            if _key in data and _key not in extra:
+                extra[_key] = data[_key]
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
@@ -375,7 +403,7 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
-            extra=data.get("extra", {}),
+            extra=extra,
         )
 
 
@@ -541,7 +569,12 @@ class GatewayConfig:
     multiplex_profiles: bool = False
 
     # Unauthorized DM policy
-    unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
+    unauthorized_dm_behavior: str = "pair"  # "pair", "ignore", or "reject"
+
+    # Refusal text for ``unauthorized_dm_behavior: reject``. Empty uses
+    # DEFAULT_UNAUTHORIZED_MESSAGE. Per-platform override lives in
+    # ``platforms.<name>.unauthorized_message``.
+    unauthorized_message: str = ""
 
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
@@ -655,6 +688,7 @@ class GatewayConfig:
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
+            "unauthorized_message": self.unauthorized_message,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
         }
@@ -715,6 +749,8 @@ class GatewayConfig:
             max_concurrent_raw,
             max_concurrent_key,
         )
+        unauthorized_message = data.get("unauthorized_message")
+        unauthorized_message = unauthorized_message.strip() if isinstance(unauthorized_message, str) else ""
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
             data.get("unauthorized_dm_behavior"),
             "pair",
@@ -744,6 +780,7 @@ class GatewayConfig:
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
+            unauthorized_message=unauthorized_message,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
         )
@@ -765,6 +802,23 @@ class GatewayConfig:
             if platform == Platform.EMAIL:
                 return "ignore"
         return self.unauthorized_dm_behavior
+
+    def get_unauthorized_message(self, platform: Optional[Platform] = None) -> str:
+        """Return the refusal text used by ``unauthorized_dm_behavior: reject``.
+
+        Per-platform text wins over the global one. A bot that serves one
+        audience in one language should not have to change the global default
+        for every other platform it also speaks on.
+        """
+        if platform:
+            platform_cfg = self.platforms.get(platform)
+            if platform_cfg:
+                text = platform_cfg.extra.get("unauthorized_message")
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
+        if self.unauthorized_message.strip():
+            return self.unauthorized_message.strip()
+        return DEFAULT_UNAUTHORIZED_MESSAGE
 
     def get_notice_delivery(self, platform: Optional[Platform] = None) -> str:
         """Return the effective notice-delivery mode for a platform."""

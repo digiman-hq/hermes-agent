@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -65,6 +66,7 @@ def _make_runner(platform: Platform, config: GatewayConfig):
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = False
     runner.pairing_store._is_rate_limited.return_value = False
+    runner.pairing_store._claim_rate_limit.return_value = True
     # Attributes required by _handle_message for the authorized-user path
     runner._running_agents = {}
     runner._running_agents_ts = {}
@@ -937,3 +939,200 @@ def test_qqbot_with_allowlist_ignores_unauthorized_dm(monkeypatch):
 
     behavior = runner._get_unauthorized_dm_behavior(Platform.QQBOT)
     assert behavior == "ignore"
+
+
+# ---------------------------------------------------------------------------
+# reject — reply once with a refusal, then stay quiet
+#
+# Silence is wrong for an internal bot that colleagues can discover org-wide:
+# the person cannot tell "not for you" from "broken". `reject` answers exactly
+# that much and nothing else.
+# ---------------------------------------------------------------------------
+
+def _reject_config(platform: Platform, **extra) -> GatewayConfig:
+    return GatewayConfig(
+        platforms={platform: PlatformConfig(enabled=True, extra={
+            "unauthorized_dm_behavior": "reject", **extra,
+        })},
+    )
+
+
+def test_reject_is_a_supported_behavior():
+    from gateway.config import _normalize_unauthorized_dm_behavior
+
+    assert _normalize_unauthorized_dm_behavior("reject") == "reject"
+    assert _normalize_unauthorized_dm_behavior("REJECT ") == "reject"
+    # Unknown values still fall back rather than reaching the send path.
+    assert _normalize_unauthorized_dm_behavior("refuse") == "pair"
+
+
+def test_explicit_reject_wins_over_the_allowlist_default(monkeypatch):
+    """An allowlist alone means "ignore". Asking for reject must override it —
+    that is the whole point of configuring it on a locked-down bot."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000001")
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP, _reject_config(Platform.WHATSAPP))
+    assert runner._get_unauthorized_dm_behavior(Platform.WHATSAPP) == "reject"
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_dm_gets_one_refusal_and_no_pairing_code(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000001")
+
+    runner, adapter = _make_runner(Platform.WHATSAPP, _reject_config(Platform.WHATSAPP))
+
+    result = await runner._handle_message(
+        _make_event(Platform.WHATSAPP, "15559999999@s.whatsapp.net", "15559999999@s.whatsapp.net")
+    )
+
+    assert result is None
+    adapter.send.assert_awaited_once()
+    sent = adapter.send.await_args.args[1]
+    assert sent == "Sorry, I can't help you here."
+    # No pairing offer: the refusal must not hint at a way in.
+    runner.pairing_store.generate_code.assert_not_called()
+    assert "code" not in sent.lower()
+
+
+@pytest.mark.asyncio
+async def test_refusal_text_is_configurable_per_platform(monkeypatch):
+    """The employee-facing deployment answers in Japanese; other platforms the
+    same gateway serves should not have to."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000001")
+
+    config = _reject_config(Platform.WHATSAPP, unauthorized_message="ご利用いただけません。")
+    runner, adapter = _make_runner(Platform.WHATSAPP, config)
+
+    await runner._handle_message(
+        _make_event(Platform.WHATSAPP, "15559999999@s.whatsapp.net", "15559999999@s.whatsapp.net")
+    )
+
+    assert adapter.send.await_args.args[1] == "ご利用いただけません。"
+
+
+@pytest.mark.asyncio
+async def test_repeated_messages_are_rate_limited(monkeypatch):
+    """Otherwise a stranger — or a retry loop — makes the bot answer forever,
+    and every reply is a free "yes, something is listening here"."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000001")
+
+    runner, adapter = _make_runner(Platform.WHATSAPP, _reject_config(Platform.WHATSAPP))
+    runner.pairing_store._claim_rate_limit.return_value = False
+
+    await runner._handle_message(
+        _make_event(Platform.WHATSAPP, "15559999999@s.whatsapp.net", "15559999999@s.whatsapp.net")
+    )
+
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_first_refusal_records_the_rate_limit(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000001")
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP, _reject_config(Platform.WHATSAPP))
+
+    await runner._handle_message(
+        _make_event(Platform.WHATSAPP, "15559999999@s.whatsapp.net", "15559999999@s.whatsapp.net")
+    )
+
+    runner.pairing_store._claim_rate_limit.assert_called_once_with(
+        "whatsapp", "15559999999@s.whatsapp.net"
+    )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_rejections_claim_once_before_send_completes(monkeypatch, tmp_path):
+    """Concurrent webhook retries must not amplify the refusal response."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000001")
+
+    runner, adapter = _make_runner(Platform.WHATSAPP, _reject_config(Platform.WHATSAPP))
+    import gateway.pairing as pairing
+
+    monkeypatch.setattr(pairing, "PAIRING_DIR", tmp_path / "pairing")
+    runner.pairing_store = pairing.PairingStore()
+    send_entered = asyncio.Event()
+    release_send = asyncio.Event()
+
+    async def blocked_send(_chat_id, _message):
+        send_entered.set()
+        await release_send.wait()
+
+    adapter.send.side_effect = blocked_send
+    events = [
+        _make_event(
+            Platform.WHATSAPP,
+            "15559999999@s.whatsapp.net",
+            "15559999999@s.whatsapp.net",
+        )
+        for _ in range(5)
+    ]
+    tasks = [asyncio.create_task(runner._handle_message(event)) for event in events]
+
+    await send_entered.wait()
+    await asyncio.sleep(0)
+    assert adapter.send.await_count == 1
+
+    release_send.set()
+    await asyncio.gather(*tasks)
+
+
+@pytest.mark.asyncio
+async def test_busy_unauthorized_dm_uses_the_shared_rejection_limit(monkeypatch):
+    """An offboarded user gets the same refusal while their session is busy."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000001")
+
+    runner, adapter = _make_runner(Platform.WHATSAPP, _reject_config(Platform.WHATSAPP))
+    event = _make_event(
+        Platform.WHATSAPP,
+        "15559999999@s.whatsapp.net",
+        "15559999999@s.whatsapp.net",
+    )
+
+    handled = await runner._handle_active_session_busy_message(event, "session-1")
+
+    assert handled is True
+    runner.pairing_store._claim_rate_limit.assert_called_once_with(
+        "whatsapp", "15559999999@s.whatsapp.net"
+    )
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reject_does_not_fire_in_group_chats(monkeypatch):
+    """A refusal aimed at one member is noise for everyone else in the room."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000001")
+
+    runner, adapter = _make_runner(Platform.WHATSAPP, _reject_config(Platform.WHATSAPP))
+    event = _make_event(Platform.WHATSAPP, "15559999999@s.whatsapp.net", "group-1@g.us")
+    event.source.chat_type = "group"
+
+    await runner._handle_message(event)
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_authorized_users_are_unaffected_by_reject(monkeypatch):
+    """Regression guard: the reject branch must not swallow real traffic."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000001")
+
+    runner, adapter = _make_runner(Platform.WHATSAPP, _reject_config(Platform.WHATSAPP))
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        user_id="15550000001",
+        chat_id="15550000001",
+        user_name="tester",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source) is True
+    adapter.send.assert_not_awaited()

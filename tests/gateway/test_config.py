@@ -1064,3 +1064,50 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+# ---------------------------------------------------------------------------
+# unauthorized DM policy — top-level keys must not land nowhere
+# ---------------------------------------------------------------------------
+
+def test_unauthorized_keys_are_read_from_the_top_level():
+    """``hermes config set platforms.teams.unauthorized_dm_behavior reject``
+    writes the key at the top level, but the readers look in ``extra``. Without
+    folding, the operator gets a success message and the old behavior — the
+    same silent-drop shape as ``multiplex_profiles`` nested under ``gateway:``.
+    """
+    from gateway.config import PlatformConfig
+
+    cfg = PlatformConfig.from_dict({
+        "enabled": True,
+        "unauthorized_dm_behavior": "reject",
+        "unauthorized_message": "ご利用いただけません。",
+    })
+    assert cfg.extra["unauthorized_dm_behavior"] == "reject"
+    assert cfg.extra["unauthorized_message"] == "ご利用いただけません。"
+
+
+def test_explicit_extra_wins_over_the_top_level():
+    from gateway.config import PlatformConfig
+
+    cfg = PlatformConfig.from_dict({
+        "enabled": True,
+        "unauthorized_dm_behavior": "ignore",
+        "extra": {"unauthorized_dm_behavior": "reject"},
+    })
+    assert cfg.extra["unauthorized_dm_behavior"] == "reject"
+
+
+def test_unauthorized_message_falls_back_to_the_builtin_default():
+    from gateway.config import (
+        DEFAULT_UNAUTHORIZED_MESSAGE, GatewayConfig, Platform, PlatformConfig,
+    )
+
+    config = GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True)})
+    assert config.get_unauthorized_message(Platform.SLACK) == DEFAULT_UNAUTHORIZED_MESSAGE
+
+    config.unauthorized_message = "global text"
+    assert config.get_unauthorized_message(Platform.SLACK) == "global text"
+
+    config.platforms[Platform.SLACK].extra["unauthorized_message"] = "slack text"
+    assert config.get_unauthorized_message(Platform.SLACK) == "slack text"

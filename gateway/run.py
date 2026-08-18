@@ -1673,6 +1673,7 @@ if not _configured_cwd or _configured_cwd in {".", "auto", "cwd"}:
 from gateway.config import (
     Platform,
     _BUILTIN_PLATFORM_VALUES,
+    DEFAULT_UNAUTHORIZED_MESSAGE,
     GatewayConfig,
     HomeChannel,
     PlatformConfig,
@@ -4207,6 +4208,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    async def _send_unauthorized_dm_rejection(self, source: SessionSource) -> None:
+        """Send one rate-limited refusal for an unauthorized direct message."""
+        if (
+            source.chat_type != "dm"
+            or source.user_id is None
+            or self._get_unauthorized_dm_behavior(source.platform) != "reject"
+        ):
+            return
+
+        platform_name = source.platform.value if source.platform else "unknown"
+        # Claim before awaiting network I/O. Concurrent deliveries for the same
+        # sender must not all observe an open slot and amplify the refusal.
+        if not self.pairing_store._claim_rate_limit(platform_name, source.user_id):
+            return
+
+        adapter = self.adapters.get(source.platform)
+        if adapter:
+            try:
+                message = self.config.get_unauthorized_message(source.platform)
+            except AttributeError:
+                message = DEFAULT_UNAUTHORIZED_MESSAGE
+            await adapter.send(source.chat_id, message)
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -4214,6 +4238,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # otherwise unauthorized users in shared threads (Slack/Telegram/Discord)
         # can inject messages into an active session they don't own.
         if not self._is_user_authorized(event.source):
+            await self._send_unauthorized_dm_rejection(event.source)
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
                 "user=%s (%s), platform=%s, session=%s",
@@ -7350,8 +7375,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-            # In DMs: offer pairing code. In groups: silently ignore.
-            if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
+            _unauthorized_behavior = self._get_unauthorized_dm_behavior(source.platform)
+            # In DMs: offer a pairing code, or refuse in one line. In groups:
+            # silently ignore either way — a refusal addressed to one member of
+            # a shared channel is noise for everyone else in it.
+            if source.chat_type == "dm" and _unauthorized_behavior == "reject":
+                await self._send_unauthorized_dm_rejection(source)
+                return None
+            if source.chat_type == "dm" and _unauthorized_behavior == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
                 # Rate-limit ALL pairing responses (code or rejection) to
                 # prevent spamming the user with repeated messages when

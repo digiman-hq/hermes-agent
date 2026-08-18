@@ -390,6 +390,14 @@ class PairingStore:
             limits[key] = now
         self._save_json(self._rate_limit_path(), limits)
 
+    def _claim_rate_limit(self, platform: str, user_id: str) -> bool:
+        """Atomically claim a rate-limit slot, returning whether it was acquired."""
+        with self._lock:
+            if self._is_rate_limited(platform, user_id):
+                return False
+            self._record_rate_limit(platform, user_id)
+            return True
+
     def _is_locked_out(self, platform: str) -> bool:
         """Check if a platform is in lockout due to failed approval attempts."""
         limits = self._load_json(self._rate_limit_path())
